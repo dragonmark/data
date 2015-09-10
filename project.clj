@@ -1,4 +1,4 @@
-(defproject dragonmark/data "0.1.0"
+(defproject dragonmark/data "0.1.1"
   :description "Helpful utilities for PostgreSQL and Redis"
   :url "https://github.com/dragonmark/data"
   :license {:name "Eclipse Public License"

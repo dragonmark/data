@@ -70,16 +70,16 @@
 (declare update-db-tables)
 
 ;; The database connection
-(defn- private-db
-  []
-  (let [the-fn @db-conn-str-function-atom
-        the-val (and the-fn (the-fn))
-        ret
-        (if the-val
-          (apply pg/pool (-> the-val seq flatten))
-          (pg/pool))]
-    ;; (future (update-db-tables))
-    ret)
+(def ^:private private-db
+  (delay
+   (let [the-fn @db-conn-str-function-atom
+         the-val (and the-fn (the-fn))
+         ret
+         (if the-val
+           (apply pg/pool (-> the-val seq flatten))
+           (pg/pool))]
+     (future (update-db-tables))
+     ret))
   )
 
 (defmacro with-db-metadata
@@ -103,7 +103,7 @@
   []
   (let [tables
         (->> (with-db-metadata
-               [md (private-db)]
+               [md @private-db]
                (jdbc/metadata-result (.getTables md nil "public" nil nil)
                                      :result-set-fn identity))
              (filter #(= "TABLE" (:table_type %))))
@@ -116,16 +116,16 @@
 (defn db-conn
   "Returns the database connection"
   []
-  (or **currentent-db-connection** (private-db)))
+  (or **currentent-db-connection** @private-db))
 
 (defmacro in-transaction
   [& body]
 
-  `(jdbc/with-db-transaction
-     [trans# (private-db)]
-     (binding [**currentent-db-connection** trans#]
-       ~@body
-       )))
+  `(let [^Connection con# (jdbc/get-connection @private-db)]
+     (jdbc/with-db-transaction
+       [trans# (jdbc/add-connection @private-db con#)]
+       (binding [**currentent-db-connection** trans#]
+         ~@body))))
 
 (defn build-transaction-middleware
   "Builds ring middleware that wraps the current request
@@ -140,7 +140,6 @@
   "Runs an SQL statement"
   ([statement] (run-statement (db-conn) statement))
   ([db statement]
-   (println "Statement " (pr-str statement))
    (cond
      (and (vector? statement)
           (= 2 (count statement)))
@@ -608,9 +607,7 @@ and passed to the function (in a future). The function returns
   [table-info]
   (log/info (str "Performing schemification for " (pr-str table-info)))
   (in-transaction
-    (let [cc **currentent-db-connection**
-          ^Connection z (jdbc/db-find-connection cc)]
-      (let [all (schemify **currentent-db-connection** table-info)]
-        (log/info (str "Applying sql: " (pr-str all)))
-        ((apply statement-builder all) **currentent-db-connection**))))
+   (let [all (schemify **currentent-db-connection** table-info)]
+     (log/info (str "Applying sql: " (pr-str all)))
+     ((apply statement-builder all) **currentent-db-connection**)))
   (update-db-tables))
