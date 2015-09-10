@@ -4,7 +4,7 @@ A Clojure library designed to help with PostgreSQL and Redis
 
 ## Usage
 
-
+[![Clojars Project](http://clojars.org/dragonmark/data/latest-version.svg)](http://clojars.org/dragonmark/data)
 
 ## License
 
