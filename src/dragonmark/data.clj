@@ -113,19 +113,64 @@
                                 tables))]
     (reset! db-tables tables)))
 
+(defn- trans-valid
+  []
+  (and **currentent-db-connection**
+       (:connection **currentent-db-connection**)
+       (not (.isClosed ^Connection (:connection **currentent-db-connection**)))))
+
 (defn db-conn
   "Returns the database connection"
   []
-  (or **currentent-db-connection** @private-db))
+  (if (trans-valid)
+    **currentent-db-connection**
+    @private-db))
+
+(def ^{:private true :dynamic true} *post-transaction-fns* nil)
+
+(defn post-transaction*
+  "Execute the function after the transaction if we're in a transaction"
+  [the-fn]
+  (if (and (trans-valid)
+           *post-transaction-fns*)
+    (swap! *post-transaction-fns* conj the-fn)
+    (the-fn)
+    ))
+
+(defmacro post-transaction
+  "Execute the code post-transaction"
+  [& body]
+  `(post-transaction* (^{:once true} fn* [] ~@body)))
+
+(defn in-transaction*
+  "Process a function in the scope of a transaction"
+  [the-fn]
+  (if (trans-valid)
+    (the-fn)
+    (binding [*post-transaction-fns* (atom [])]
+      (let [^Connection con (jdbc/get-connection @private-db)
+            res (atom nil)]
+        (try 
+          (jdbc/with-db-transaction
+            [trans (jdbc/add-connection @private-db con)]
+            (binding [**currentent-db-connection** trans]
+              (let [res (atom nil)]
+                (reset! res
+                        (the-fn))
+                @res)))
+          (finally
+            (try
+              (when (not (.isClosed con))
+                (.close con))
+              (catch Exception _ @res))
+            (doseq [f @*post-transaction-fns*]
+              (try (f) (catch Exception _ _)))))))))
 
 (defmacro in-transaction
   [& body]
+  `(in-transaction* (^{:once true} fn* [] ~@body)))
 
-  `(let [^Connection con# (jdbc/get-connection @private-db)]
-     (jdbc/with-db-transaction
-       [trans# (jdbc/add-connection @private-db con#)]
-       (binding [**currentent-db-connection** trans#]
-         ~@body))))
+
 
 (defn build-transaction-middleware
   "Builds ring middleware that wraps the current request
@@ -134,7 +179,10 @@
   (fn [request]
     (if **currentent-db-connection**
       (handler request)
-      (in-transaction (handler request)))))
+      (do
+        (let [ret  (in-transaction (handler request))]
+          ret
+          )))))
 
 (defn run-statement
   "Runs an SQL statement"
@@ -306,9 +354,7 @@ and passed to the function (in a future). The function returns
   ;; write changes to Redis
   (rput key @a)
   (add-watch a :watcher
-             (fn [key atom
-                  old-state
-                  new-state]
+             (fn [_ _ _ new-state]
                (future
                  (wcar*
                    (car/set key new-state))))))
